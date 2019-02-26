@@ -2,13 +2,32 @@
 {% set beat_home = '/usr/share/%s' % beat -%}
 {% set binary_file = '%s/%s' % (beat_home, beat) -%}
 
+FROM golang:1.11.5 as golang
+
+# NOTE(Alex): No idea why `go get` complains, just ignore it
+RUN go get -u -d github.com/magefile/mage && \
+    cd $GOPATH/src/github.com/magefile/mage && \
+    go run bootstrap.go && \
+    go get -u github.com/elastic/beats || true && \
+    cd $GOPATH/src/github.com/elastic/beats/{{ beat }} && \
+    git remote add alav http://github.com/alexandruavadanii/beats && \
+    git fetch alav && \
+    git checkout v{{ elastic_version}}-arm64v8 && \
+    make && \
+    mkdir -p build/golang-crossbuild && \
+    cp -a {{ beat }} build/golang-crossbuild/{{ beat }}-linux-arm64 && \
+    apt update && \
+    apt install -y virtualenv && \
+    GOLANG_CROSSBUILD=1 PLATFORMS="+all linux/arm64" mage package
+
 FROM centos:7
 
 RUN yum update -y && yum install -y curl && yum clean all
 
-RUN curl -Lso - {{ url }} | \
-      tar zxf - -C /tmp && \
-    mv /tmp/{{ beat }}-{{ elastic_version }}-linux-x86_64 {{ beat_home }}
+COPY --from=golang /go/src/github.com/alexandruavadanii/beats/{{ beat }}/build/distributions/{{ beat }}-{{ elastic_version }}-linux-arm64.tar.gz /tmp
+RUN tar zxf /tmp/FIXME -C /tmp && \
+    mv /tmp/{{ beat }}-{{ elastic_version }}-linux-arm64 {{ beat_home }} && \
+    rm /tmp/{{ beat }}-{{ elastic_version }}-linux-arm64.tar.gz
 
 
 ENV ELASTIC_CONTAINER true
@@ -33,6 +52,7 @@ RUN mkdir data logs && \
     chmod 0770 modules.d && \
     {% endif -%}
     chmod 0770 data logs
+RUN chmod 0755 /usr/local/bin/docker-entrypoint
 
 {%- if beat == 'packetbeat' %}
 RUN setcap cap_net_raw,cap_net_admin=eip {{ binary_file }}
